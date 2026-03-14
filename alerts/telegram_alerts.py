@@ -33,9 +33,12 @@ def send_alert(message: str):
 
 def format_signal_alert(signal: dict) -> str:
     """Format signal dictionary into readable alert"""
-    return f"""🚨 <b>Market Signal</b>
+    return f"""🚨 <b>AI Trading Signal Scrapper</b>
 
 <b>Ticker:</b> {signal.get('ticker')}
+<b>Entry:</b> {signal.get('entry', 'N/A')}
+<b>SL:</b> {signal.get('sl', 'N/A')}
+<b>TP:</b> {signal.get('tp', 'N/A')}
 <b>Opportunity Score:</b> {signal.get('score')}
 <b>Momentum:</b> {signal.get('momentum_status')} (px_chg: {signal.get('price_change_pct')}%)
 <b>Sentiment:</b> {signal.get('sentiment_status')}

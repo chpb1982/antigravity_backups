@@ -26,6 +26,9 @@ def generate_signal(ticker: str, news_data: list, market_data: dict) -> dict:
     
     return {
         "ticker": ticker,
+        "entry": market_data.get("entry") if market_data else None,
+        "sl": market_data.get("sl") if market_data else None,
+        "tp": market_data.get("tp") if market_data else None,
         "score": final_score,
         "sentiment": round(sentiment_score, 2),
         "sentiment_status": sentiment_status,
