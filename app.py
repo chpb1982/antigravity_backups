@@ -368,7 +368,7 @@ def load_analysis_logs(agent_keys: list, days_back: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True).dt.tz_convert('US/Eastern')
     return combined.sort_values("timestamp", ascending=False)
 
 
@@ -394,7 +394,7 @@ def load_approved_signals(agent_keys: list, days_back: int) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True).dt.tz_convert('US/Eastern')
     return combined.sort_values("timestamp", ascending=False)
 
 
@@ -414,17 +414,20 @@ def load_system_logs(agent_keys: list, days_back: int, level: str) -> pd.DataFra
     if not frames:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True).dt.tz_convert('US/Eastern')
     return combined.sort_values("timestamp", ascending=False)
 
 
 def load_model_weights(agent_key: str) -> pd.DataFrame:
     if agent_key == "MarketBrainPro":
         return pd.DataFrame()
-    return safe_query(agent_key, """
+    df = safe_query(agent_key, """
         SELECT weight_name, value, win_rate, sample_size, updated_at
         FROM model_weights ORDER BY value DESC
     """)
+    if not df.empty and "updated_at" in df.columns:
+        df["updated_at"] = pd.to_datetime(df["updated_at"], utc=True).dt.tz_convert('US/Eastern')
+    return df
 
 
 def make_gauge(value: float, title: str, color: str) -> go.Figure:
@@ -490,7 +493,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     st.caption("Push MarketBrainDashboard/ to GitHub then connect at share.streamlit.io")
     st.markdown("---")
-    st.caption(f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.caption(f"🕐 {pd.Timestamp.now('US/Eastern').strftime('%Y-%m-%d %H:%M:%S')} ET")
     if st.button("🔄 Refresh Data"):
         st.cache_resource.clear()
         st.rerun()
