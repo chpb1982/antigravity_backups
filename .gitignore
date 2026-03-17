@@ -1,0 +1,15 @@
+# Secrets — never commit this to GitHub
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
