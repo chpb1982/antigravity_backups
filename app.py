@@ -72,10 +72,20 @@ p, li, label { color:#94a3b8 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─── DB Config ─────────────────────────────────────────────────────────────────
-PG_USER = os.getenv("POSTGRES_USER", "pb")
-PG_PASS = os.getenv("POSTGRES_PASSWORD", "")
-PG_HOST = os.getenv("POSTGRES_HOST", "localhost")
+# ─── DB Connections ─────────────────────────────────────────────────────────────
+# Priority: 
+# 1. Streamlit secrets (cloud)
+# 2. Environment variables (local/docker)
+# 3. Defaults (local)
+
+def get_db_cred(key, default):
+    if key in st.secrets:
+        return st.secrets[key]
+    return os.getenv(key, default)
+
+PG_USER = get_db_cred("POSTGRES_USER", "pb")
+PG_PASS = get_db_cred("POSTGRES_PASSWORD", "")
+PG_HOST = get_db_cred("POSTGRES_HOST", "localhost")
 
 AGENTS = {
     "MarketBrainPro":   {"db": "market_brain",      "badge": "pro",  "label": "MarketBrainPro",  "color": "#7c3aed", "threshold": 0.60},
@@ -85,7 +95,9 @@ AGENTS = {
 
 @st.cache_resource
 def get_engine(db_name: str):
-    url = f"postgresql://{PG_USER}:{PG_PASS}@{PG_HOST}:5432/{db_name}"
+    # Support for SSL (required for Neon)
+    ssl_param = "?sslmode=require" if "neon.tech" in PG_HOST else ""
+    url = f"postgresql://{PG_USER}:{PG_PASS}@{PG_HOST}:5432/{db_name}{ssl_param}"
     return create_engine(url, pool_pre_ping=True)
 
 def safe_query(agent_key: str, sql: str, params: dict = None) -> pd.DataFrame:
