@@ -101,18 +101,38 @@ def load_ml_logs():
     except Exception as e:
         return pd.DataFrame()
 
+# ─── Data Pre-Processing & Extractions ──────────────────────────────────────────
+# Extract Status from Agent names (Since the system embeds it like 'Agent (APPROVED)')
+if "Agent" in df.columns and "Status" not in df.columns:
+    df["Status"] = df["Agent"].apply(
+        lambda x: "REJECTED" if "REJECTED" in str(x).upper() else "APPROVED"
+    )
+    df["Agent"] = df["Agent"].apply(
+        lambda x: str(x).replace(" (APPROVED)", "").replace(" (REJECTED)", "") # Strip status from name
+    )
+
 # ─── KPI Bar ────────────────────────────────────────────────────────────────────
 def show_kpis(df):
-    t1, t2, t3, t4 = st.columns(4)
-    t1.metric("📊 Total Signals", len(df))
-    t2.metric("🤖 Agents", df["Agent"].nunique() if "Agent" in df.columns else 0)
-    t3.metric("🎯 Unique Tickers", df["Symbol"].nunique() if "Symbol" in df.columns else 0)
+    t1, t2, t3, t4, t5, t6 = st.columns(6)
+    
+    total = len(df)
+    
+    approved = len(df[df["Status"] == "APPROVED"]) if "Status" in df.columns else total
+    rejected = len(df[df["Status"] == "REJECTED"]) if "Status" in df.columns else 0
+        
+    unique_tickers = df["Symbol"].nunique() if "Symbol" in df.columns else 0
     
     # Calculate Avg Confidence
-    avg_conf = 0
+    avg_conf = 0.0
     if "Confidence" in df.columns:
-        avg_conf = df["Confidence"].dropna().astype(float).mean()
-    t4.metric("📈 Avg. Score", f"{avg_conf:.3f}")
+        avg_conf = pd.to_numeric(df["Confidence"].replace("—", pd.NA), errors='coerce').dropna().mean()
+
+    t1.metric("📋 Total Analysed", total)
+    t2.metric("✅ Approved", int(approved))
+    t3.metric("❌ Rejected", int(rejected))
+    t4.metric("🎯 Unique Tickers", int(unique_tickers))
+    t5.metric("📊 Avg Score", f"{avg_conf:.3f}" if not pd.isna(avg_conf) else "0.000")
+    t6.metric("🏆 Win Rate", "—", "0W / 0L")
 
 # ─── Main Interface ─────────────────────────────────────────────────────────────
 st.markdown("# 🧠 MarketBrain Command Centre")
@@ -132,8 +152,13 @@ with st.sidebar:
     agents = sorted(df["Agent"].dropna().unique().tolist())
     selected_agents = st.multiselect("Agents", options=agents, default=agents)
     
+    statuses = sorted(df["Status"].dropna().unique().tolist()) if "Status" in df.columns else ["APPROVED"]
+    selected_statuses = st.multiselect("Status", options=statuses, default=statuses)
+    
     tickers = sorted(df["Symbol"].dropna().unique().tolist())
     selected_tickers = st.multiselect("Symbols", options=tickers, default=[], placeholder="All Tickers")
+    
+    time_window = st.selectbox("Time Window", ["All Time", "Today", "Last 7 Days", "Last 30 Days", "YTD"], index=0)
 
     st.markdown("---")
     if st.button("🔄 Force Refresh"):
@@ -144,10 +169,32 @@ with st.sidebar:
 
 # Filter Data
 filtered_df = df.copy()
+
 if selected_agents:
     filtered_df = filtered_df[filtered_df["Agent"].isin(selected_agents)]
+if selected_statuses and "Status" in filtered_df.columns:
+    filtered_df = filtered_df[filtered_df["Status"].isin(selected_statuses)]
 if selected_tickers:
     filtered_df = filtered_df[filtered_df["Symbol"].isin(selected_tickers)]
+
+if time_window != "All Time" and "Timestamp" in filtered_df.columns:
+    now = pd.Timestamp.now()
+    if time_window == "Today":
+        start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif time_window == "Last 7 Days":
+        start_date = now - pd.Timedelta(days=7)
+    elif time_window == "Last 30 Days":
+        start_date = now - pd.Timedelta(days=30)
+    elif time_window == "YTD":
+        start_date = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    # Timezone handling if Timestamp has a tz attached
+    if pd.api.types.is_datetime64tz_dtype(filtered_df["Timestamp"]):
+        start_date = start_date.tz_localize(now.tz).tz_convert(filtered_df["Timestamp"].dt.tz) if start_date.tz is None else start_date.tz_convert(filtered_df["Timestamp"].dt.tz)
+    else:
+        start_date = start_date.tz_localize(None)
+
+    filtered_df = filtered_df[filtered_df["Timestamp"] >= start_date]
 
 show_kpis(filtered_df)
 
