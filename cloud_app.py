@@ -84,6 +84,23 @@ def load_data():
             st.info("💡 Tip: Try clearing your Streamlit Cache (sidebar button) if you just shared the sheet.")
         return pd.DataFrame()
 
+@st.cache_data(ttl=300)
+def load_ml_logs():
+    try:
+        from streamlit_gsheets import GSheetsConnection
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        # Assuming the tab created by the sync script is named "ML_Logs"
+        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="ML_Logs", ttl=300)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df.columns = [str(c).strip() for c in df.columns]
+        if "trained_at" in df.columns:
+            df["trained_at"] = pd.to_datetime(df["trained_at"], errors='coerce')
+            df = df.sort_values("trained_at", ascending=False)
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
 # ─── KPI Bar ────────────────────────────────────────────────────────────────────
 def show_kpis(df):
     t1, t2, t3, t4 = st.columns(4)
@@ -135,7 +152,7 @@ if selected_tickers:
 show_kpis(filtered_df)
 
 # ─── Tables ───────────────────────────────────────────────────────────────────
-tab1, tab2 = st.tabs(["📋 Trade Ledger", "🔬 Factor Deep-Dive"])
+tab1, tab2, tab3 = st.tabs(["📋 Trade Ledger", "🔬 Factor Deep-Dive", "🧠 Self-Learning Progress"])
 
 with tab1:
     st.markdown("<div class='section-header'>Synchronized Signal Master List</div>", unsafe_allow_html=True)
@@ -191,6 +208,37 @@ with tab2:
                 "Confidence": st.column_config.NumberColumn("Score", format="%.3f"),
             }
         )
+
+with tab3:
+    st.markdown("<div class='section-header'>Machine Learning Model Progress & Auto-Calibration</div>", unsafe_allow_html=True)
+    
+    ml_df = load_ml_logs()
+    if ml_df.empty:
+        st.info("Waiting for the nightly ML Retraining Cron-Job to publish logs...")
+    else:
+        # Extract Top Level KPIs from latest run
+        latest_run = ml_df.iloc[0]
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Latest Training", getattr(latest_run, "trained_at", "Unknown").strftime("%b %d, %H:%M"))
+        m2.metric("Base Accuracy", f"{getattr(latest_run, 'accuracy', 0)*100:.1f}%")
+        m3.metric("Train Samples", int(getattr(latest_run, 'train_samples', 0)))
+        m4.metric("Active Features", int(getattr(latest_run, 'feature_count', 0)))
+        
+        # Line chart of accuracy progress
+        st.markdown("#### Retraining Trend (Accuracy & ROC AUC)")
+        temp = ml_df.dropna(subset=['accuracy']).sort_values('trained_at').tail(20)
+        if not temp.empty and "trained_at" in temp.columns:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=temp["trained_at"], y=temp["accuracy"], mode='lines+markers', name='Global Accuracy', line=dict(color='#10b981', width=3)))
+            fig.add_trace(go.Scatter(x=temp["trained_at"], y=temp["roc_auc"], mode='lines+markers', name='ROC AUC (Predictive Power)', line=dict(color='#3b82f6', width=2)))
+            fig.update_layout(height=350, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#94a3b8'), margin=dict(l=0,r=0,t=20,b=0))
+            st.plotly_chart(fig, use_container_width=True)
+            
+        st.markdown("#### Full Autonomic Logs")
+        show_cols = ["trained_at", "model_type", "accuracy", "roc_auc", "f1_score", "train_samples", "test_samples", "feature_count"]
+        avail_cols = [c for c in show_cols if c in ml_df.columns]
+        st.dataframe(ml_df[avail_cols], use_container_width=True, hide_index=True)
 
 st.markdown("---")
 st.caption("☁️ This dashboard is running on Streamlit Cloud and is connected to the Master Google Sheets API. Zero sync latency for live signals.")
