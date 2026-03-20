@@ -78,13 +78,18 @@ def load_data():
         df = df.sort_values("Timestamp", ascending=False)
         
         # ─── Data Pre-Processing & Extractions ──────────────────────────────────
-        if "Agent" in df.columns and "Status" not in df.columns:
-            df["Status"] = df["Agent"].apply(
-                lambda x: "REJECTED" if "REJECTED" in str(x).upper() else "APPROVED"
-            )
-            df["Agent"] = df["Agent"].apply(
-                lambda x: str(x).replace(" (APPROVED)", "").replace(" (REJECTED)", "")
-            )
+        if "Status" not in df.columns:
+            # Deduce Status explicitly from the AI Confidence metric (0.60+ is system approval baseline)
+            if "Confidence" in df.columns:
+                c_series = pd.to_numeric(df["Confidence"].replace("—", 0), errors="coerce").fillna(0)
+                df["Status"] = c_series.apply(lambda x: "APPROVED" if float(x) >= 0.60 else "REJECTED")
+            else:
+                df["Status"] = "APPROVED"
+                
+            if "Agent" in df.columns:
+                df["Agent"] = df["Agent"].apply(
+                    lambda x: str(x).replace(" (APPROVED)", "").replace(" (REJECTED)", "")
+                )
             
         return df
     except Exception as e:
