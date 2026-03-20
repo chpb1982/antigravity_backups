@@ -51,6 +51,7 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .badge-pro  { background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;padding:3px 10px;border-radius:20px;font-size:0.75rem;font-weight:600; }
 .badge-max1 { background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;padding:3px 10px;border-radius:20px;font-size:0.75rem;font-weight:600; }
 .badge-max2 { background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:3px 10px;border-radius:20px;font-size:0.75rem;font-weight:600; }
+.badge-intraday { background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;padding:3px 10px;border-radius:20px;font-size:0.75rem;font-weight:600; }
 .badge-long   { background:rgba(16,185,129,0.2);color:#10b981;border:1px solid #10b981;padding:2px 9px;border-radius:20px;font-size:0.8rem;font-weight:600; }
 .badge-short  { background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid #ef4444;padding:2px 9px;border-radius:20px;font-size:0.8rem;font-weight:600; }
 .badge-accept { background:rgba(16,185,129,0.15);color:#34d399;border:1px solid rgba(16,185,129,0.4);padding:2px 9px;border-radius:20px;font-size:0.78rem;font-weight:600; }
@@ -79,8 +80,12 @@ p, li, label { color:#94a3b8 !important; }
 # 3. Defaults (local)
 
 def get_db_cred(key, default):
-    if key in st.secrets:
-        return st.secrets[key]
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        # st.secrets might throw if no sources exist
+        pass
     return os.getenv(key, default)
 
 PG_USER = get_db_cred("POSTGRES_USER", "pb")
@@ -91,10 +96,15 @@ AGENTS = {
     "MarketBrainPro":   {"db": "market_brain",      "badge": "pro",  "label": "MarketBrainPro",  "color": "#7c3aed", "threshold": 0.60},
     "MarketBrainMAX-1": {"db": "market_brain_max",  "badge": "max1", "label": "MAX-1",           "color": "#0ea5e9", "threshold": 0.60},
     "MarketBrainMAX-2": {"db": "market_brain_max2", "badge": "max2", "label": "MAX-2",           "color": "#10b981", "threshold": 0.60},
+    "MarketBrainMAX-3": {"db": "marketbrainpromax3", "badge": "max3", "label": "MAX-3",           "color": "#f43f5e", "threshold": 0.60},
+    "IntradayEngine":   {"db": "sqlite:////Volumes/ExternalSSD/intraday-signal-engine/signals.db", "badge": "intraday", "label": "Intraday Engine", "color": "#f59e0b", "threshold": 0.50},
+    "UnifiedHistory":   {"db": "marketbrain_unified", "badge": "pro", "label": "Unified Master DB", "color": "#fbbf24", "threshold": 0.60},
 }
 
 @st.cache_resource
 def get_engine(db_name: str):
+    if db_name.startswith("sqlite"):
+        return create_engine(db_name)
     # Support for SSL (required for Neon)
     ssl_param = "?sslmode=require" if "neon.tech" in PG_HOST else ""
     url = f"postgresql://{PG_USER}:{PG_PASS}@{PG_HOST}:5432/{db_name}{ssl_param}"
@@ -337,9 +347,11 @@ def load_analysis_logs(agent_keys: list, days_back: int) -> pd.DataFrame:
         "MarketBrainPro":   parse_pro_logs,
         "MarketBrainMAX-1": parse_max1_logs,
         "MarketBrainMAX-2": parse_max2_logs,
+        "MarketBrainMAX-3": parse_max2_logs, # Similar for now
     }
 
     for ak in agent_keys:
+        if ak not in parsers: continue
         df_logs = safe_query(ak, """
             SELECT timestamp, level, logger_name, message
             FROM system_logs
@@ -368,7 +380,7 @@ def load_analysis_logs(agent_keys: list, days_back: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True).dt.tz_convert('US/Eastern')
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True, format='ISO8601').dt.tz_convert('US/Eastern')
     return combined.sort_values("timestamp", ascending=False)
 
 
@@ -376,31 +388,63 @@ def load_approved_signals(agent_keys: list, days_back: int) -> pd.DataFrame:
     """Load fully detailed approved signals from trade_signals table."""
     frames = []
     for ak in agent_keys:
-        df = safe_query(ak, """
-            SELECT id, timestamp, symbol, direction, score, ml_prob,
-                   sentiment, momentum, volume_score,
-                   COALESCE(news_score, 0) AS news_score,
-                   regime, entry_price, stop_loss, take_profit,
-                   reasoning,
-                   COALESCE(outcome_state, 'OPEN') AS outcome_state,
-                   realized_pnl
-            FROM trade_signals
-            WHERE timestamp >= NOW() - INTERVAL ':days days'
-            ORDER BY timestamp DESC
-        """, {"days": days_back})
+        if ak == "IntradayEngine":
+            # Map Intraday SQLite table to the dashboard's standard schema
+            # We divide confidence_score by 100.0 to match the 0.0-1.0 scale of other agents
+            query = """
+                SELECT id, timestamp, ticker AS symbol, COALESCE(direction, '—') AS direction, 
+                       (confidence_score / 100.0) AS score, 0.0 AS ml_prob,
+                       0.0 AS sentiment, 0.0 AS momentum, 0.0 AS volume_score,
+                       0.0 AS news_score, strategy AS regime, 
+                       entry_price, stop_loss, target_price AS take_profit,
+                       reasoning,
+                       COALESCE(outcome, 'OPEN') AS outcome_state,
+                       0.0 AS realized_pnl
+                FROM signals
+                WHERE timestamp >= date('now', '-7 days')
+                ORDER BY timestamp DESC
+                LIMIT 100
+            """
+        elif ak == "UnifiedHistory":
+            query = """
+                SELECT id, created_at AS timestamp, symbol, direction, confidence AS score, ml_probability AS ml_prob,
+                       sentiment_score AS sentiment, momentum_score AS momentum, 0.0 AS volume_score,
+                       0.0 AS news_score, regime, entry_price, stop_loss, take_profit,
+                       reasoning, status AS outcome_state, 0.0 AS realized_pnl
+                FROM signals
+                WHERE created_at >= NOW() - INTERVAL ':days days'
+                ORDER BY created_at DESC
+            """
+        else:
+            table_name = "signals" if ak == "MarketBrainMAX-3" else "trade_signals"
+            query = f"""
+                SELECT id, timestamp, symbol, direction, score, ml_prob,
+                       sentiment, momentum, volume_score,
+                       COALESCE(news_score, 0) AS news_score,
+                       regime, entry_price, stop_loss, take_profit,
+                       reasoning,
+                       COALESCE(outcome_state, 'OPEN') AS outcome_state,
+                       realized_pnl
+                FROM {table_name}
+                WHERE timestamp >= NOW() - INTERVAL ':days days'
+                ORDER BY timestamp DESC
+            """
+        df = safe_query(ak, query, {"days": days_back})
         if not df.empty:
             df["agent"] = ak
             frames.append(df)
     if not frames:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True).dt.tz_convert('US/Eastern')
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True, format='ISO8601').dt.tz_convert('US/Eastern')
     return combined.sort_values("timestamp", ascending=False)
 
 
 def load_system_logs(agent_keys: list, days_back: int, level: str) -> pd.DataFrame:
     frames = []
     for ak in agent_keys:
+        if ak == "IntradayEngine":
+            continue # SQLite engine has no system_logs table
         df = safe_query(ak, """
             SELECT timestamp, level, logger_name, message
             FROM system_logs
@@ -414,7 +458,7 @@ def load_system_logs(agent_keys: list, days_back: int, level: str) -> pd.DataFra
     if not frames:
         return pd.DataFrame()
     combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True).dt.tz_convert('US/Eastern')
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True, format='ISO8601').dt.tz_convert('US/Eastern')
     return combined.sort_values("timestamp", ascending=False)
 
 
@@ -547,6 +591,11 @@ else:
     df_all = pd.DataFrame()
 
 if not df_all.empty:
+    # Ensure all required display columns exist to avoid KeyError
+    for col in ["event_type", "news_mentions", "reject_reason", "ml_prob", "sentiment", "momentum", "volume_score"]:
+        if col not in df_all.columns:
+            df_all[col] = None
+    
     df_all = df_all.sort_values("timestamp", ascending=False)
 
 # Apply ticker filter
@@ -620,13 +669,19 @@ with tab1:
             "Score","ML Prob","Sentiment","Momentum","Entry",
             "Stop Loss","Take Profit","Event","News Hits","Reject Reason"
         ]
-        disp["Timestamp"] = pd.to_datetime(disp["Timestamp"]).dt.strftime("%m-%d %H:%M")
+        disp["Timestamp"] = pd.to_datetime(disp["Timestamp"], format='ISO8601').dt.strftime("%m-%d %H:%M")
         for col in ["Score","ML Prob"]:
             disp[col] = disp[col].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
         for col in ["Sentiment","Momentum"]:
             disp[col] = disp[col].apply(lambda x: f"{x:+.2f}" if pd.notna(x) else "—")
         for col in ["Entry","Stop Loss","Take Profit"]:
             disp[col] = disp[col].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "—")
+
+        disp["Chart"] = disp["Symbol"].apply(lambda x: f"https://finance.yahoo.com/quote/{x}")
+        
+        # Re-order columns to put Chart first
+        cols = ["Timestamp", "Agent", "Symbol", "Chart", "Status", "Direction", "Score", "ML Prob", "Sentiment", "Momentum", "Entry", "Stop Loss", "Take Profit", "Event", "News Hits", "Reject Reason"]
+        disp = disp[cols]
 
         def row_color(row):
             if row["Status"] == "APPROVED":
@@ -635,7 +690,14 @@ with tab1:
                 return ["background-color: rgba(239,68,68,0.05)"] * len(row)
             return [""] * len(row)
 
-        st.dataframe(disp.style.apply(row_color, axis=1), use_container_width=True, height=520)
+        st.dataframe(
+            disp.style.apply(row_color, axis=1), 
+            use_container_width=True, 
+            height=520,
+            column_config={
+                "Chart": st.column_config.LinkColumn("Chart 📈", display_text="Yahoo!"),
+            }
+        )
 
         # Download button
         csv = disp.to_csv(index=False)
@@ -684,7 +746,8 @@ with tab2:
             direction = r.get("direction","—")
             dir_cls = "badge-long" if direction == "LONG" else ("badge-short" if direction == "SHORT" else "")
 
-            reasoning = r.get("reasoning","") or r.get("reject_reason","") or "Pending AI analysis."
+            reason_val = r.get("reasoning") if pd.notna(r.get("reasoning")) else (r.get("reject_reason") if pd.notna(r.get("reject_reason")) else "")
+            reason_str = str(reason_val) if reason_val else "Pending AI analysis."
 
             st.markdown(f"""
             <div class='signal-card'>
@@ -705,7 +768,7 @@ with tab2:
                 <div><div style='color:#64748b;font-size:0.72rem;'>Event</div>
                   <div style='color:#fbbf24;font-weight:600;'>{r.get("event_type","—")}</div></div>
               </div>
-              <p style='color:#cbd5e1;line-height:1.6;margin:0;font-size:0.9rem;'>{reasoning[:500]}</p>
+              <p style='color:#cbd5e1;line-height:1.6;margin:0;font-size:0.9rem;'>{reason_str[:500]}</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -713,7 +776,7 @@ with tab2:
             if len(row_data) > 1:
                 st.markdown("<div class='section-header'>Score History</div>", unsafe_allow_html=True)
                 hist = row_data[["timestamp","score","ml_prob"]].dropna(subset=["score"]).copy()
-                hist["timestamp"] = pd.to_datetime(hist["timestamp"]).dt.strftime("%m-%d %H:%M")
+                hist["timestamp"] = pd.to_datetime(hist["timestamp"], format='ISO8601').dt.strftime("%m-%d %H:%M")
                 fig_h = go.Figure()
                 fig_h.add_trace(go.Scatter(x=hist["timestamp"], y=hist["score"], name="Score",
                     line=dict(color="#3b82f6", width=2), mode="lines+markers"))
@@ -932,7 +995,7 @@ with tab4:
         log_level = st.selectbox("Level", ["ALL","INFO","WARNING","ERROR"], key="log_sel")
         df_sys = load_system_logs(selected_agents, 1, log_level)
         if not df_sys.empty:
-            df_sys["timestamp"] = pd.to_datetime(df_sys["timestamp"]).dt.strftime("%H:%M:%S")
+            df_sys["timestamp"] = pd.to_datetime(df_sys["timestamp"], format='ISO8601').dt.strftime("%H:%M:%S")
             st.dataframe(
                 df_sys[["timestamp","agent","level","logger_name","message"]].rename(columns={
                     "timestamp":"Time","agent":"Agent","level":"Level",

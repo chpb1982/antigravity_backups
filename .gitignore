@@ -13,3 +13,8 @@ __pycache__/
 
 # Logs
 *.log
+*.db
+token.json
+credentials.json
+*.joblib
+*.csv
