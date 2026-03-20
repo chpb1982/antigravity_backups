@@ -108,6 +108,9 @@ def load_ml_logs():
             df["trained_at"] = pd.to_datetime(df["trained_at"], errors='coerce')
             df = df.sort_values("trained_at", ascending=False)
         return df
+    except Exception as e:
+        return pd.DataFrame()
+
 # ─── KPI Bar ────────────────────────────────────────────────────────────────────
 def show_kpis(df):
     t1, t2, t3, t4, t5, t6 = st.columns(6)
