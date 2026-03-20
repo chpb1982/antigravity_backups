@@ -152,13 +152,16 @@ with tab1:
     # Formatting
     disp["Timestamp"] = disp["Timestamp"].dt.strftime("%Y-%m-%d %H:%M")
     
+    # Convert Symbol to Yahoo Finance URL
+    disp["Symbol"] = "https://finance.yahoo.com/quote/" + disp["Symbol"].astype(str)
+    
     st.dataframe(
         disp,
         use_container_width=True,
         height=600,
         column_config={
             "Timestamp": st.column_config.TextColumn("Time (ET)"),
-            "Symbol": st.column_config.TextColumn("Ticker", width="small"),
+            "Symbol": st.column_config.LinkColumn("Ticker", display_text=r"https://finance\.yahoo\.com/quote/(.*)", width="small"),
             "Confidence": st.column_config.NumberColumn("Score", format="%.3f"),
             "Explanation": st.column_config.TextColumn("Analysis Reasoning", width="large"),
         }
@@ -176,7 +179,18 @@ with tab2:
     else:
         # Fill missing values for cleaner display
         adv_df = adv_df[adv_cols].fillna("—")
-        st.dataframe(adv_df, use_container_width=True)
+
+        # Convert Symbol to Yahoo Finance URL
+        adv_df["Symbol"] = "https://finance.yahoo.com/quote/" + adv_df["Symbol"].astype(str)
+
+        st.dataframe(
+            adv_df, 
+            use_container_width=True,
+            column_config={
+                "Symbol": st.column_config.LinkColumn("Ticker", display_text=r"https://finance\.yahoo\.com/quote/(.*)"),
+                "Confidence": st.column_config.NumberColumn("Score", format="%.3f"),
+            }
+        )
 
 st.markdown("---")
 st.caption("☁️ This dashboard is running on Streamlit Cloud and is connected to the Master Google Sheets API. Zero sync latency for live signals.")
