@@ -62,7 +62,7 @@ def load_data():
         
         # Read the sheet using the direct URL (it's often more robust than ID only)
         # We specify worksheet="Sheet1" because that's where agents log.
-        df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=300)
+        df = conn.read(spreadsheet=SPREADSHEET_URL, worksheet="Sheet1", ttl=300)
         
         if df is None or df.empty:
             return pd.DataFrame()
@@ -79,17 +79,35 @@ def load_data():
         
         # ─── Data Pre-Processing & Extractions ──────────────────────────────────
         if "Status" not in df.columns:
-            # Deduce Status explicitly from the AI Confidence metric (0.60+ is system approval baseline)
+            if "Agent" in df.columns:
+                # First try to extract Status directly from Agent tag (e.g., "(APPROVED)")
+                def extract_status(a):
+                    s = str(a)
+                    if "(APPROVED)" in s: return "APPROVED"
+                    if "(REJECTED)" in s: return "REJECTED"
+                    return None
+                df["Status"] = df["Agent"].apply(extract_status)
+                
+                # Strip the tags from Agent name
+                df["Agent"] = df["Agent"].apply(
+                    lambda x: str(x).replace(" (APPROVED)", "").replace(" (REJECTED)", "").replace("(APPROVED)", "").replace("(REJECTED)", "").strip()
+                )
+            else:
+                df["Status"] = None
+
+            # Fallback deduction if Status is still empty
             if "Confidence" in df.columns:
                 c_series = pd.to_numeric(df["Confidence"].replace("—", 0), errors="coerce").fillna(0)
-                df["Status"] = c_series.apply(lambda x: "APPROVED" if float(x) >= 0.60 else "REJECTED")
-            else:
-                df["Status"] = "APPROVED"
-                
-            if "Agent" in df.columns:
-                df["Agent"] = df["Agent"].apply(
-                    lambda x: str(x).replace(" (APPROVED)", "").replace(" (REJECTED)", "")
+                # Handle both 0-1 and 0-100 scales
+                df["Status"] = df.apply(
+                    lambda row: row["Status"] if pd.notna(row["Status"]) and row["Status"] else (
+                        "APPROVED" if (float(row["Confidence"]) > 1.0 and float(row["Confidence"]) >= 60.0) 
+                        or (float(row["Confidence"]) <= 1.0 and float(row["Confidence"]) >= 0.60) 
+                        else "REJECTED"
+                    ), axis=1
                 )
+            else:
+                df["Status"] = df["Status"].fillna("APPROVED")
             
         return df
     except Exception as e:
